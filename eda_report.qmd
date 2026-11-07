@@ -1,0 +1,230 @@
+---
+title: "Exploratory Data Analysis: Internship Participation Among STA304 Students"
+subtitle: "Self-run practice project"
+format:
+  pdf:
+    documentclass: article
+    geometry: "margin=1in"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(easystats)
+library(knitr)
+
+df_raw <- read.csv("internship_survey.csv")
+
+# Readable labels from the codebook, used for every table and plot
+df <- df_raw |>
+  mutate(
+    Gender = factor(gender, levels = 0:2,
+                    labels = c("Male", "Female", "Other / Prefer not to say")),
+    Status = factor(status, levels = 0:1, labels = c("Domestic", "International")),
+    Program = factor(program, levels = 1:5,
+                     labels = c("Statistics", "Mathematics", "Computer Science",
+                                "Economics / Management", "Other")),
+    `Co-op` = factor(coop, levels = 0:1, labels = c("Not in co-op", "In co-op")),
+    Internship = factor(had_internship, levels = 0:1,
+                        labels = c("No internship", "Had internship")),
+    `Main Barrier` = factor(main_barrier, levels = 0:5,
+                            labels = c("Not applicable", "Lack of experience",
+                                       "Lack of time", "Work permit / visa",
+                                       "Don't know where to look",
+                                       "Not interested right now")),
+    `Applications (past 12 months)` = num_applications,
+    `Search Hours per Week` = search_hours,
+    Confidence = confidence,
+    `Importance of Internships` = importance,
+    `University Support` = uni_support
+  )
+```
+
+# Data Overview
+
+The dataset contains `r nrow(df)` responses and no missing values. Each row is one STA304 student. The key variable is whether the student has completed, or is currently in, an internship. Likert items are scored from 1 (Strongly disagree) to 5 (Strongly agree).
+
+# Summary Statistics
+
+```{r}
+#| label: tbl-quant
+#| tbl-cap: "Summary statistics for the quantitative variables."
+quant_vars <- c("Applications (past 12 months)", "Search Hours per Week",
+                "Confidence", "Importance of Internships", "University Support")
+
+datawizard::describe_distribution(df, select = quant_vars,
+                                  centrality = c("mean", "median")) |>
+  select(Variable, Median, Mean, SD, IQR, Min, Max, n) |>
+  kable(digits = 2)
+```
+
+```{r}
+#| label: tbl-qual
+#| tbl-cap: "Counts and percentages for the qualitative variables."
+qual_vars <- c("Gender", "Status", "Program", "Co-op", "Internship")
+
+map_dfr(qual_vars, \(v) {
+  df |>
+    count(Value = .data[[v]]) |>
+    mutate(Variable = v, Percent = round(100 * n / sum(n), 1))
+}) |>
+  select(Variable, Value, N = n, Percent) |>
+  kable()
+```
+
+Exactly half of the sample (`r sum(df$had_internship)` of `r nrow(df)`) has had an internship. The sample is unbalanced in places: about two-thirds of respondents are male, most are domestic students, and Statistics is the largest program. Some program categories have very few students, so comparisons by program should be read with caution.
+
+Students submitted a median of `r median(df$num_applications)` applications in the past year, with a wide spread (SD `r round(sd(df$num_applications), 1)`). Students largely agree that internships are important for their careers (mean `r round(mean(df$importance), 2)` out of 5) but feel only moderately confident about getting one (mean `r round(mean(df$confidence), 2)`). Similar means and medians do not by themselves show that a variable is normally distributed; normality is checked separately below.
+
+# Graphs and Tables
+
+```{r}
+#| label: fig-coop
+#| fig-cap: "Internship participation by co-op enrolment. Almost every co-op student has had an internship, compared with under a third of non-co-op students."
+#| fig-height: 3.5
+df |>
+  count(`Co-op`, Internship) |>
+  group_by(`Co-op`) |>
+  mutate(Percent = 100 * n / sum(n)) |>
+  ggplot(aes(x = `Co-op`, y = Percent, fill = Internship)) +
+  geom_col() +
+  scale_fill_manual(values = c("#BBBBBB", "#2A6F97")) +
+  labs(title = "Internship Participation by Co-op Enrolment",
+       x = "Co-op enrolment", y = "Percent of students", fill = NULL) +
+  theme_minimal()
+```
+
+```{r}
+#| label: tbl-status
+#| tbl-cap: "Internship participation by domestic/international status (row percentages). Domestic students participate at a higher rate, but the international group is small."
+datawizard::data_tabulate(df, "Status", by = "Internship", proportions = "row") |>
+  print_md()
+```
+
+```{r}
+#| label: fig-confidence
+#| fig-cap: "Confidence in securing an internship, by internship experience. Students who have had an internship report higher confidence; their median is a full point higher."
+#| fig-height: 3.5
+ggplot(df, aes(x = Internship, y = Confidence, fill = Internship)) +
+  geom_boxplot(show.legend = FALSE) +
+  scale_fill_manual(values = c("#BBBBBB", "#2A6F97")) +
+  labs(title = "Confidence by Internship Experience",
+       x = NULL, y = "Confidence (1 = Strongly disagree, 5 = Strongly agree)") +
+  theme_minimal()
+```
+
+# Checking Model Assumptions
+
+**Two-sample comparison of confidence (RQ4).** Fitting confidence on internship experience as a linear model lets us check normality of residuals and equal variances between the two groups.
+
+```{r}
+#| label: fig-assumptions
+#| fig-cap: "Assumption checks for the comparison of mean confidence between the two groups."
+#| fig-height: 6
+conf_model <- lm(Confidence ~ Internship, data = df)
+performance::check_model(conf_model,
+                         check = c("qq", "normality", "homogeneity"))
+```
+
+```{r}
+#| label: assump-tests
+norm_res <- performance::check_normality(conf_model)
+var_res  <- performance::check_homogeneity(conf_model)
+```
+
+Because confidence is a 1–5 Likert score, the residuals take only a handful of values, so the Q-Q plot shows a step pattern rather than a smooth line. The Shapiro-Wilk test gives p = `r round(as.numeric(norm_res), 3)`, and Bartlett's test for equal variances gives p = `r round(as.numeric(var_res), 3)`. These checks are only approximate for discrete data. As the course allows, we note any departures and proceed, using Welch's t-test so equal variances are not required.
+
+**Logistic regression (RQ3).** Logistic regression does not assume normal residuals, but it does require that no predictor (or combination of predictors) perfectly separates the outcome. That check matters here:
+
+```{r}
+#| label: tbl-separation
+#| tbl-cap: "Internship participation by co-op enrolment and status. Two cells are zero."
+df |>
+  count(`Co-op`, Status, Internship) |>
+  pivot_wider(names_from = Internship, values_from = n, values_fill = 0) |>
+  kable()
+```
+
+No international student outside co-op has had an internship, and every domestic co-op student has. This is called **quasi-complete separation**: a model that includes both co-op and status cannot estimate those effects, and R warns that fitted probabilities are numerically 0 or 1. This is the reason model selection below keeps either co-op or status, not both.
+
+# Statistical Tests
+
+## RQ1: Proportion of students with internship experience
+
+```{r}
+#| label: prop
+prop_res <- prop.test(sum(df$had_internship), nrow(df), p = 0.5)
+```
+
+An estimated `r round(100 * prop_res$estimate)`% of students have had an internship (95% CI: `r round(100 * prop_res$conf.int[1])`% to `r round(100 * prop_res$conf.int[2])`%). The test against 50% gives p = `r round(prop_res$p.value, 3)`, so there is no evidence that the true proportion differs from one half. With only 50 students, the interval is wide.
+
+## RQ2: Chi-square tests of independence
+
+```{r}
+#| label: chisq
+chi_coop   <- chisq.test(table(df$`Co-op`, df$Internship))
+chi_status <- chisq.test(table(df$Status, df$Internship))
+report::report(chi_coop)
+report::report(chi_status)
+```
+
+Participation is strongly associated with co-op enrolment (p < 0.001): co-op students are far more likely to have had an internship. The association with status is not significant (p = `r round(chi_status$p.value, 3)`). Domestic students participated at a higher rate in this sample, but with only 15 international students the difference could plausibly be due to chance.
+
+## RQ3: Logistic regression with model selection
+
+```{r}
+#| label: logit
+m_full   <- glm(had_internship ~ num_applications + coop + status,
+                data = df, family = binomial)
+m_apps_coop <- glm(had_internship ~ num_applications + coop,
+                   data = df, family = binomial)
+m_apps_status <- glm(had_internship ~ num_applications + status,
+                     data = df, family = binomial)
+m_coop   <- glm(had_internship ~ coop, data = df, family = binomial)
+m_apps   <- glm(had_internship ~ num_applications, data = df, family = binomial)
+
+performance::compare_performance(m_apps_coop, m_apps_status, m_coop, m_apps,
+                                 metrics = c("AIC", "BIC", "R2")) |>
+  print_md()
+```
+
+The full model is excluded because of the separation described above. Among the remaining models, co-op enrolment alone has the lowest AIC. Adding the number of applications does not improve the fit once co-op is in the model.
+
+```{r}
+#| label: logit-report
+parameters::model_parameters(m_coop, exponentiate = TRUE) |> print_md()
+report::report(m_coop)
+```
+
+**Directional conclusion:** co-op students have much higher odds of having had an internship than non-co-op students (odds ratio about `r round(exp(coef(m_coop)[2]))`). The confidence interval is very wide because only two co-op students had no internship.
+
+## RQ4: Confidence by internship experience
+
+```{r}
+#| label: ttest
+had <- df$confidence[df$had_internship == 1]
+not <- df$confidence[df$had_internship == 0]
+t_res <- t.test(had, not)
+report::report(t_res)
+```
+
+**Directional conclusion:** students who have had an internship report significantly higher confidence (mean `r round(mean(had), 2)` vs `r round(mean(not), 2)`, p = `r round(t_res$p.value, 3)`). Because this is an observational survey, we cannot say whether internships build confidence or more confident students are more likely to land internships.
+
+# Limitations
+
+The data are simulated, and in a real survey the sample would be self-selected rather than truly random. Some groups (international students, non-binary students, smaller programs) are small, which limits subgroup comparisons.
+
+\newpage
+
+# Appendix: Code
+
+```{r}
+#| label: appendix
+#| ref.label: !expr knitr::all_labels()
+#| echo: true
+#| eval: false
+```
